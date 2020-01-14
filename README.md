@@ -37,7 +37,7 @@ The supported Puppet versions are listed in the [metadata.json](metadata.json)
 
 ## REFERENCES
 
-Please see [REFERENCE](REFERENCE.md) for more details.
+Please see [REFERENCE.md](https://github.com/voxpupuli/puppet-openvpn/blob/master/REFERENCE.md) for more details.
 
 ## Example with hiera
 
@@ -153,4 +153,4 @@ Please see [CONTRIBUTING](.github/CONTRIBUTING.md) for more details.
 
 * Raffael Schmid <raffael@yux.ch>
 * Vox Pupuli Team
-* List of contributors https://github.com/danquack/puppet-openvpn/graphs/contributors
+* List of contributors https://github.com/voxpupuli/puppet-openvpn/graphs/contributors

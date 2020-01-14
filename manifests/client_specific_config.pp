@@ -8,9 +8,11 @@
 # @param iroute_ipv6 Array of IPv6 iroute combinations.
 # @param route  Array of route combinations pushed to client.
 # @param ifconfig IP configuration to push to the client.
+# @param ifconfig_ipv6 IPv6 configuration to push to the client.
 # @param dhcp_options DHCP options to push to the client.
 # @param redirect_gateway Redirect all traffic to gateway
 # @param ensure Sets the client specific configuration file status (present or absent)
+# @param manage_client_configs Manage dependencies on Openvpn::Client ressources
 #
 # @example
 #   openvpn::client_specific_config {
@@ -21,19 +23,26 @@
 #       dhcp_options => ['DNS 8.8.8.8']
 #    }
 define openvpn::client_specific_config (
-  String $server,
-  Enum[present, absent] $ensure      = present,
-  Array[String] $iroute              = [],
-  Array[String] $iroute_ipv6         = [],
-  Array[String] $route               = [],
-  Variant[Boolean, String] $ifconfig = false,
-  Array[String]  $dhcp_options       = [],
+  String[1] $server,
+  Enum['present', 'absent'] $ensure  = present,
+  Array[String[1]] $iroute           = [],
+  Array[String[1]] $iroute_ipv6      = [],
+  Array[String[1]] $route            = [],
+  Optional[String[1]] $ifconfig      = undef,
+  Optional[String[1]] $ifconfig_ipv6 = undef,
+  Array[String[1]]  $dhcp_options    = [],
   Boolean $redirect_gateway          = false,
+  Boolean $manage_client_configs     = true,
 ) {
 
-  Openvpn::Server[$server]
-  -> Openvpn::Client[$name]
-  -> Openvpn::Client_specific_config[$name]
+  if $manage_client_configs {
+    Openvpn::Server[$server]
+    -> Openvpn::Client[$name]
+    -> Openvpn::Client_specific_config[$name]
+  } else {
+    Openvpn::Server[$server]
+    -> Openvpn::Client_specific_config[$name]
+  }
 
   file { "${openvpn::etc_directory}/openvpn/${server}/client-configs/${name}":
     ensure  => $ensure,

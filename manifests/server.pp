@@ -7,6 +7,8 @@
 # @param organization Organization to be used for the SSL certificate, mandatory for server mode.
 # @param email Email address to be used for the SSL certificate, mandatory for server mode.
 # @param remote List of OpenVPN endpoints to connect to.
+# @param remote_random_hostname OpenVPN will prepend a random string (6 bytes, 12 hex characters) to hostname to prevent DNS caching. For example, "foo.example.com" would be modified to "<random-chars>.foo.example.com". 
+# @param remote_random When multiple ${remote} address/ports are specified, initially randomize the order of the list as a kind of basic load-balancing measure.
 # @param common_name Common name to be used for the SSL certificate
 # @param compression Which compression algorithim to use
 # @param dev TUN/TAP virtual network device
@@ -16,6 +18,9 @@
 # @param duplicate_cn Allow multiple connections on one cn
 # @param local Interface for openvpn to bind to.
 # @param logfile Logfile for this openvpn server
+# @param manage_logfile_directory Manage the directory that the logfile is located in
+# @param logdirectory_user The owner user of the logfile directory
+# @param logdirectory_group The owner group of the logfile directory
 # @param port The port the openvpn server service is running on#
 # @param portshare The address and port to which non openvpn request shall be forwared, e.g. 127.0.0.1 8443
 # @param proto What IP protocol is being used.
@@ -38,8 +43,10 @@
 # @param management Enable management interface
 # @param management_ip  IP address where the management interface will listen
 # @param management_port Port where the management interface will listen
-# @param up Script which we want to run when openvpn server starts
-# @param down  Script which we want to run when openvpn server stops
+# @param up Script which we want to run when openvpn server starts. If the path to the scirpt does not contain a slash, it will be assumed to be in `openvpn/${name}/scripts` directory.
+# @param down  Script which we want to run when openvpn server stops. If the path to the scirpt does not contain a slash, it will be assumed to be in `openvpn/${name}/scripts` directory.
+# @param client_connect  Script which we want to run when a client connects. If the path to the scirpt does not contain a slash, it will be assumed to be in `openvpn/${name}/scripts` directory.
+# @param client_disconnect  Script which we want to run when a client disconnects. If the path to the scirpt does not contain a slash, it will be assumed to be in `openvpn/${name}/scripts` directory.
 # @param username_as_common_name If true then set username-as-common-name
 # @param client_cert_not_required If true then set client-cert-not-required
 # @param ldap_enabled If ldap is enabled, do stuff
@@ -68,6 +75,7 @@
 # @param key_ou Value for organizationalUnitName_default variable in openssl.cnf and KEY_OU in vars
 # @param key_cn Value for commonName_default variable in openssl.cnf and KEY_CN in vars
 # @param tls_auth  Activates tls-auth to Add an additional layer of HMAC authentication on top of the TLS control channel to protect against DoS attacks.
+# @param tls_crypt Encrypt and authenticate all control channel packets with the key from keyfile. (See --tls-auth for more background.)
 # @param tls_server If proto not tcp it lets you choose if the parameter tls-server is set or not.
 # @param tls_client Allows you to set this server up as a tls-client connection.
 # @param server_poll_timeout Value for timeout before trying the next server.
@@ -91,6 +99,20 @@
 # @param remote_cert_tls Enable or disable use of remote-cert-tls for the session. Generally used with client configuration
 # @param nobind Whether or not to bind to a specific port number.#
 # @param secret A pre-shared static key.
+# @param scripts Hash of scripts to copy with this instance.
+#  For example, to put a script in `/etc/openvpn/test-site/scripts/add-tap-to-bridge.sh` and use it as an `up` script
+#  ``` puppet
+#  openvpn::server { 'test-site':
+#    ....
+#    up => 'add-tap-to-bridge.sh',
+#    scripts => {
+#      "add-tap-to-bridge.sh" => {
+#        source => 'puppet:///path/to/add-tap-to-bridge.sh',
+#      },
+#    },
+#  }
+#  ```
+#
 # @param custom_options Hash of additional options to append to the configuration file.
 #
 # @example install
@@ -102,6 +124,7 @@
 #       email        => 'root@example.org',
 #       server       => '10.200.200.0 255.255.255.0',
 #   }
+#
 # @example a server in client mode
 #   file {
 #     '/etc/openvpn/zurich/keys/ca.crt':
@@ -125,6 +148,8 @@ define openvpn::server (
   Optional[String] $organization                                    = undef,
   Optional[String] $email                                           = undef,
   Optional[Array] $remote                                           = undef,
+  Boolean $remote_random_hostname                                   = false,
+  Boolean $remote_random                                            = false,
   String $common_name                                               = 'server',
   String $compression                                               = 'comp-lzo',
   String $dev                                                       = 'tun0',
@@ -132,8 +157,11 @@ define openvpn::server (
   Optional[String] $group                                           = undef,
   Boolean $ipp                                                      = false,
   Boolean $duplicate_cn                                             = false,
-  String $local                                                     = $facts['ipaddress_eth0'],
+  String $local                                                     = $facts['networking']['ip'],
   Variant[Boolean, String] $logfile                                 = false,
+  Boolean $manage_logfile_directory                                 = false,
+  String[1] $logdirectory_user                                      = 'nobody',
+  String[1] $logdirectory_group                                     = 'nobody',
   String $port                                                      = '1194',
   Optional[String] $portshare                                       = undef,
   Enum['tcp', 'tcp4', 'tcp6', 'udp', 'udp4', 'udp6'] $proto         = 'tcp',
@@ -157,8 +185,10 @@ define openvpn::server (
   Boolean $management                                               = false,
   String $management_ip                                             = 'localhost',
   Variant[Stdlib::Port::Unprivileged,Enum['unix']] $management_port = 7505,
-  String $up                                                        = '',
-  String $down                                                      = '',
+  Optional[String[1]] $up                                           = undef,
+  Optional[String[1]] $down                                         = undef,
+  Optional[String[1]] $client_connect                               = undef,
+  Optional[String[1]] $client_disconnect                            = undef,
   Boolean $username_as_common_name                                  = false,
   Boolean $client_cert_not_required                                 = false,
   Boolean $ldap_enabled                                             = false,
@@ -174,8 +204,8 @@ define openvpn::server (
   Boolean $ldap_tls_enable                                          = false,
   String $ldap_tls_ca_cert_file                                     = '',
   String $ldap_tls_ca_cert_dir                                      = '',
-  String $ldap_tls_client_cert_file                                 = '',
-  String $ldap_tls_client_key_file                                  = '',
+  Optional[Stdlib::Absolutepath] $ldap_tls_client_cert_file         = undef,
+  Optional[Stdlib::Absolutepath] $ldap_tls_client_key_file          = undef,
   Integer $ca_expire                                                = 3650,
   Integer $key_expire                                               = 3650,
   String $key_cn                                                    = '',
@@ -187,6 +217,7 @@ define openvpn::server (
   Boolean $persist_key                                              = false,
   Boolean $persist_tun                                              = false,
   Boolean $tls_auth                                                 = false,
+  Boolean $tls_crypt                                                = false,
   Boolean $tls_server                                               = false,
   Boolean $tls_client                                               = false,
   Optional[Integer] $server_poll_timeout                            = undef,
@@ -210,6 +241,7 @@ define openvpn::server (
   Boolean $remote_cert_tls                                          = false,
   Boolean $nobind                                                   = false,
   Optional[String] $secret                                          = undef,
+  Hash[String, Hash] $scripts                                       = {},
   Hash $custom_options                                              = {},
 ) {
 
@@ -219,6 +251,10 @@ define openvpn::server (
 
   if $facts['service_provider'] == 'systemd' and $openvpn::namespecific_rclink {
     fail("Using systemd and namespecific rclink's (BSD-style) is not allowed")
+  }
+
+  if $tls_auth and $tls_crypt {
+    fail('tls_auth and tls_crypt are mutually exclusive')
   }
 
   if $openvpn::manage_service {
@@ -233,6 +269,15 @@ define openvpn::server (
   }
   else {
     $lnotify = undef
+  }
+
+  if $manage_logfile_directory {
+    $logdir = dirname($logfile)
+    file { $logdir:
+      ensure => 'directory',
+      owner  => $logdirectory_user,
+      group  => $logdirectory_group,
+    }
   }
 
   # Selection block to enable or disable tls-server flag
@@ -273,6 +318,12 @@ define openvpn::server (
     mode   => '0750',
     notify => $lnotify,
   }
+  file {
+    [ "${etc_directory}/openvpn/${name}/scripts", ]:
+      ensure  => directory,
+      mode    => '0750',
+      recurse => true,
+  }
   if $shared_ca {
     ensure_resource(file, "${etc_directory}/openvpn/${ca_name}", {
       ensure => directory,
@@ -307,20 +358,20 @@ define openvpn::server (
 
       $ca_common_name = $common_name
       ::openvpn::ca { $name:
-        country      => $country,
-        province     => $province,
-        city         => $city,
-        organization => $organization,
-        email        => $email,
-        common_name  => $common_name,
-        group        => $group,
-        ssl_key_size => $ssl_key_size,
-        ca_expire    => $ca_expire,
-        key_expire   => $key_expire,
-        key_cn       => $key_cn,
-        key_name     => $key_name,
-        key_ou       => $key_ou,
-        tls_auth     => $tls_auth,
+        country        => $country,
+        province       => $province,
+        city           => $city,
+        organization   => $organization,
+        email          => $email,
+        common_name    => $common_name,
+        group          => $group,
+        ssl_key_size   => $ssl_key_size,
+        ca_expire      => $ca_expire,
+        key_expire     => $key_expire,
+        key_cn         => $key_cn,
+        key_name       => $key_name,
+        key_ou         => $key_ou,
+        tls_static_key => $tls_auth or $tls_crypt,
       }
 
       ## Renewal of crl.pem
@@ -390,6 +441,10 @@ define openvpn::server (
 
   # template use $_easyrsa_version
   $_easyrsa_version = $openvpn::easyrsa_version
+
+  # Template might need script directory
+  $_script_dir = "${etc_directory}/openvpn/${name}/scripts"
+
   file { "${etc_directory}/openvpn/${name}.conf":
     owner   => root,
     group   => 0,
@@ -409,6 +464,12 @@ define openvpn::server (
     mode    => '0440',
     content => $secret,
     notify  => $lnotify,
+  }
+
+  $scripts.each |String $scriptname, Hash $properties| {
+    file { "${_script_dir}/${scriptname}":
+      * => $properties,
+    }
   }
 
   if $ldap_enabled == true {
